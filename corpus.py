@@ -1,4 +1,11 @@
-"""Mutable current corpus; edits are serial, validated before publication."""
+"""Mutable current corpus; validated edits are published with a local handoff.
+
+Public behaviour is unchanged from the frozen reference.  Each successful
+``replace``/``delete`` additionally pushes the pair of affected rows to the
+attached search index, so the index never has to diff or scan the corpus to
+discover what changed.  The push happens after the corpus state (rows, df and
+version) has been updated, so a listener always observes the current state.
+"""
 from collections import Counter
 
 def valid_id(value):
@@ -16,6 +23,7 @@ class Corpus:
     def __init__(self, documents=()):
         self._rows = {}
         self._df = {}
+        self._listeners = []
         self.version = 0
         for ident, tokens in documents:
             self.replace(ident, tokens)
@@ -32,27 +40,46 @@ class Corpus:
         row = self._rows.get(ident)
         return None if row is None else (row[0], dict(row[1]))
 
+    # ---- internal cooperation with the search index --------------------
+    def _attach(self, listener):
+        """Give a freshly built index the current snapshot, then publish edits."""
+        listener._rebuild(self)
+        self._listeners.append(listener)
+
+    @staticmethod
+    def _drop_df(df, terms):
+        for term in terms:
+            remaining = df[term] - 1
+            if remaining:
+                df[term] = remaining
+            else:
+                del df[term]
+
+    @staticmethod
+    def _add_df(df, terms):
+        for term in terms:
+            df[term] = df.get(term, 0) + 1
+
+    def _publish(self, ident, old, new):
+        for listener in self._listeners:
+            listener._apply(ident, old, new)
+
     def replace(self, ident, tokens):
         valid_id(ident)
         new = counts(tokens)
         old = self._rows.get(ident)
         if old is not None:
-            for term in old[1]:
-                self._df[term] -= 1
-                if not self._df[term]:
-                    del self._df[term]
+            self._drop_df(self._df, old[1])
         self._rows[ident] = new
-        for term in new[1]:
-            self._df[term] = self._df.get(term, 0) + 1
+        self._add_df(self._df, new[1])
         self.version += 1
+        self._publish(ident, old, new)
 
     def delete(self, ident):
         valid_id(ident)
         old = self._rows.pop(ident, None)
         if old is None:
             return
-        for term in old[1]:
-            self._df[term] -= 1
-            if not self._df[term]:
-                del self._df[term]
+        self._drop_df(self._df, old[1])
         self.version += 1
+        self._publish(ident, old, None)

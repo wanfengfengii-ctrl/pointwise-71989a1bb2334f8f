@@ -107,12 +107,30 @@ def demo():
     assert result[0][0] == 10
     print("after ", result, "df(a)", c.frequency("a"), "scored", s.last_scored)
 
+    # Live correction handoff: the score of an *unedited* document rises
+    # because a delete lowers df, so the index must follow the current corpus.
+    c = Corpus([(1, ["a"] * 2 + ["p"] * 3), (2, ["a"] * 2 + ["p"] * 3),
+                (3, ["a"]), (4, ["a"]), (5, ["a"]), (6, ["a"])])
+    s = Search(c)
+    print("demo df(a)", c.frequency("a"), "top", s.query(["a"], 3),
+          "degraded", s.last_degraded, "lists", s.last_lists_read)
+    for ident in (3, 4, 5):
+        c.delete(ident)
+    print("demo df(a)", c.frequency("a"), "top", s.query(["a"], 3),
+          "degraded", s.last_degraded, "lists", s.last_lists_read)
+    # Local replace: only the edited id's postings move, and the ranking
+    # immediately reflects the new length/tf without any rebuild.
+    c.replace(1, ["a", "a", "a", "a"])
+    print("demo replace 1", "read", c.read(1), "top", s.query(["a"], 3))
+
 if __name__ == "__main__":
     mode = sys.argv[1] if len(sys.argv) > 1 else "baseline"
     correctness()
     if mode == "target":
+        import verify
+        verify.run()          # independent differential + boundary checks
         import bench
-        bench.main(True)
+        bench.main(True)      # quantification + frozen-reference timing
     elif mode == "demo":
         demo()
     elif mode != "baseline":
